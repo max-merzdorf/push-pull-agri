@@ -2,28 +2,61 @@ library(terra)
 library(sf)
 library(caret)
 library(ggplot2)
+library(RStoolbox)
 
 #rlist <- list.files("../data/raster/Robit_images/050169858020_01_P001_MUL/",pattern = ".TIF", full.names = T)
 #rsrc <- terra::sprc(rlist)
 #mos_rob <- terra::mosaic(rsrc)
 
-#rlist <- list.files("../data/raster/Kemise_images/050169858010_01_P001_MUL/",pattern = ".TIF", full.names = T)
+# Kemise area consists of 3 files (after checking in GIS) for full area and no cloud cover:
+#rlist <- list.files("../data/raster/Kemise_images/050169858010_01_P001_MUL/",pattern = ".TIF$", full.names = T)
+#rls2 <- list.files("../data/raster/Kemise_images/050169858010_01_P002_MUL/", pattern = ".TIF$", full.names = T)
+#rls3 <- list.files("../data/raster/Kemise_images/050169858010_01_P003_MUL/", pattern = ".TIF$", full.names = T)
+#rlist <- c(rlist,rls2,rls3)
 #rsrc <- terra::sprc(rlist)
 #mos_kem <- terra::mosaic(rsrc)
-#rm(rlist, rsrc)
 
 # write mosaics to file once because mosaicking takes long:
 
 #terra::writeRaster(mos_rob, "../data/raster/Robit_images/050169858020_01_P001_MUL/Robit_P001_MUL_mosaic.tif")
-#terra::writeRaster(mos_kem, "../data/raster/Kemise_images/050169858010_01_P001_MUL/Kemise_P001_MUL_mosaic.tif")
+#terra::writeRaster(mos_kem, "../data/raster/Kemise_images/Kemise_P001_P002_P003_MUL_mosaic.tif")
+#rm(rsrc,rlist,rls2,rls3)
 
 mos_rob <- terra::rast("../data/raster/Robit_images/050169858020_01_P001_MUL/Robit_P001_MUL_mosaic.tif")
-mos_kem <- terra::rast("../data/raster/Kemise_images/050169858010_01_P001_MUL/Kemise_P001_MUL_mosaic.tif")
+mos_kem <- terra::rast("../data/raster/Kemise_images/Kemise_P001_P002_P003_MUL_mosaic.tif")
 
-# training data (read all polys):
+# read s1 and s2 data:
+s1_rob <- terra::project(terra::rast("../data/raster/Robit_images/Robit_Sentinel1_mean_GRD.tif"), "EPSG:32637")
+s2_rob <- terra::project(terra::rast("../data/raster/Robit_images/Robit_Sentinel2_mean.tif"), "EPSG:32637")
+s1_kem <- terra::project(terra::rast("../data/raster/Kemise_images/Kemise_Sentinel1_mean_GRD.tif"), "EPSG:32637")
+s2_kem <- terra::project(terra::rast("../data/raster/Kemise_images/Kemise_Sentinel2_mean.tif"), "EPSG:32637")
 
-# clip
+# add to Robit and Kemise mosaics:
+#mos_rob <- c(mos_rob,s1_rob,s2_rob)
+#mos_kem <- c(mos_kem,s1_kem,s2_kem)
+#> extents do not match
 
+# match extents with intersect:
+#  align_rasters <- function(r1,r2){
+#    comext <- ext(r1, r2)
+#    r1 <- crop(r1, comext)
+#    r2 <- crop(r2, comext)
+#    r <- c(r1, r2)
+#    return(r)
+#  }
+#kem_aligned <- align_rasters(mos_kem, s2_kem)
+# actually I don't have to c() combine them I can justr extract later and keep the original resolutions
+# because resampling S2 to 1.5 m pixels is kinda not okay
+# ah no I have to align because the bands are used to predict on later
+
+# resample and combine S1 data:
+s1_kem_resampled <- resample(s1_kem, y = mos_kem)
+mos_kem <- c(mos_kem, s1_kem_resampled)
+
+s1_rob_resampled <- resample(s1_rob, y = mos_rob)
+mos_rob <- c(mos_rob, s1_rob_resampled)
+
+##### training data (read all polys):
 polys <- st_read("../data/vector/ethiopia_fielddata_clean_validgeoms.gpkg")
 polys <- st_transform(polys, 32637)
 
@@ -54,7 +87,7 @@ merged_rob <- merge(extracted_rob, robit[, c("Landcover.type", "ID")], by="ID", 
 
 # rename columns because the generated ones don't match (needed for rbind)
 
-cnames <- c("ID", "B1_coastal_blue", "B2_blue", "B3_green", "B4_yellow", "B5_red", "B6_red_edge", "B7_nir1", "B8_nir2", "Class", "geom")
+cnames <- c("ID", "B1_coastal_blue", "B2_blue", "B3_green", "B4_yellow", "B5_red", "B6_red_edge", "B7_nir1", "B8_nir2", "VV", "VH", "Class", "geom")
 colnames(merged_kem) <- cnames
 colnames(merged_rob) <- cnames
 
@@ -70,21 +103,26 @@ combined_noNA <- na.omit(combined_noNA)
 combined_noNA <- subset(combined_noNA, select = -ID) # remove ID column
 
 # training data distribution again, more precise:
-p <- ggplot(combined_noNA) +
-  geom_bar(aes(y = Class), stat = "count") +
-  xlab("Number of samples (pixels)") +
-  ylab("Land Use class") +
-  geom_text(aes(label = after_stat(count)),stack="count", position="stack", hjust = -0.2)
-p
+#p <- ggplot(combined_noNA) +
+#  geom_bar(aes(y = Class), stat = "count") +
+#  xlab("Number of samples (pixels)") +
+#  ylab("Land Use class") +
+#  geom_text(aes(label = after_stat(count)),stack="count", position="stack", hjust = -0.2)
+#p
 
-ggsave("../images/model_training_data_distribution.png",plot = p, width = 3000, height = 1000, units = "px")
+#ggsave("../images/model_training_data_distribution.png",plot = p, width = 3000, height = 1000, units = "px")
 
 model <- caret::train(Class ~ ., data = combined_noNA, method = "rf",
                       trControl = trainControl(method = "cv", number = 5))
 
 # rename raster bands to match:
-bnames <- c("B1_coastal_blue", "B2_blue", "B3_green", "B4_yellow", "B5_red", "B6_red_edge", "B7_nir1", "B8_nir2")
+bnames <- c("B1_coastal_blue", "B2_blue", "B3_green", "B4_yellow", "B5_red", "B6_red_edge", "B7_nir1", "B8_nir2", "VV", "VH")
 names(mos_kem) <- bnames
+names(mos_rob) <- bnames
 
 # predict:
-class_kem <- predict(mos_kem, model, na.rm=T) # na.rm=T probably beacuase of skewed geometry introducing NAs
+class_kem <- predict(mos_kem, model, na.rm=T)# na.rm=T probably beacuase of skewed geometry introducing NAs
+#writeRaster(class_kem, "../data/raster/Kemise_images/class_Kemise_noIndices.tif")
+class_rob <- predict(mos_rob, model, na.rm=T)
+#writeRaster(class_rob, "../data/raster/Robit_images/class_Robit_noIndices.tif")
+model
